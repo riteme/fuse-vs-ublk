@@ -1,0 +1,14 @@
+#!/bin/bash
+
+clean() {
+    set -x
+
+    sudo losetup -D
+}
+
+trap clean EXIT
+set -mex
+
+sudo losetup -f --show -b 4096 --direct-io=on test/disk
+
+sleep infinity
