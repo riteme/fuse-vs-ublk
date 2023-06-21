@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# build liburing first
+#
+# cd $LIBURING_DIR
+# ./configure && make && make install
+
+PARAM=$1
+
+set -eo pipefail
+set -x
+
+script_dir="$(dirname ${BASH_SOURCE[0]})"
+
+autoreconf -i "${script_dir}"
+
+OPTS="-g -O0  -Wall"
+: "${LIBURING_DIR:=/root/git/liburing}" #replace with your own liburing path
+PKG_CONFIG_PATH=${LIBURING_DIR} \
+${script_dir}/configure \
+  --enable-gcc-warnings $PARAM \
+  CFLAGS="-I${LIBURING_DIR}/src/include $OPTS" \
+  CXXFLAGS="-I${LIBURING_DIR}/src/include $OPTS" \
+  LDFLAGS="-L${LIBURING_DIR}/src"
+
+make -j$(nproc) --no-print-directory

@@ -1,0 +1,134 @@
+name: Build and Test CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "next" ]
+  pull_request:
+    branches: [ "next" ]
+
+env:
+  URING_VER: "2.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: "acquire: ubdsrv"
+      uses: actions/checkout@v3
+      with:
+        path: ubdsrv
+
+    - name: "acquire: liburing"
+      run: |
+        wget https://brick.kernel.dk/snaps/liburing-$URING_VER.tar.gz
+        tar xzvf liburing-$URING_VER.tar.gz
+
+    - name: "build: liburing"
+      working-directory: liburing-${{ env.URING_VER }}
+      shell: bash
+      run: |
+        ./configure
+        make -j$(nproc)
+        sudo make install
+
+    - name: "build: ubdsrv with --enable-debug"
+      working-directory: ubdsrv
+      run: |
+        LIBURING_DIR=${{ github.workspace }}/liburing-$URING_VER ./build_with_liburing_src --enable-debug
+
+    - name: "build: ubdsrv"
+      working-directory: ubdsrv
+      run: |
+        make distclean
+        LIBURING_DIR=${{ github.workspace }}/liburing-$URING_VER ./build_with_liburing_src
+
+    - name: "build: installable artifacts"
+      working-directory: ubdsrv
+      shell: bash
+      run: |
+        mkdir -p ${{ github.workspace }}/files
+        make DESTDIR=${{ github.workspace }}/files install
+
+    - name: "publish: installable artifacts"
+      uses: actions/upload-artifact@v3
+      with:
+        name: ubdsrv
+        if-no-files-found: error
+        path: ${{ github.workspace }}/files/**
+
+    - name: "publish: logs"
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: build-logs
+        if-no-files-found: ignore
+        path: ubdsrv/*.log
+
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+    - name: "install: mkosi + dependencies"
+      shell: bash
+      run: |
+        sudo apt update -o Acquire::Retries=3
+        sudo apt install -y dnf rpm systemd-container qemu-system-x86 ovmf e2fsprogs btrfs-progs
+        #python3 -m pip install --user git+https://github.com/systemd/mkosi.git
+        #python3 -m pip install --user https://github.com/systemd/mkosi/archive/refs/tags/v14.tar.gz
+        wget https://github.com/systemd/mkosi/archive/refs/tags/v14.tar.gz
+        tar zxf v14.tar.gz
+        cd mkosi-14
+        sed -i '/gpgurl\ = \urllib.parse.urljoin/c \    gpgurl\ =\ \"https://fedoraproject.org/fedora.gpg\"' ./mkosi/__init__.py
+        python3 -m pip install --user ./
+
+    # Required for ssh'ing into VM
+    - name: "setup: environment"
+      run: |
+        sudo systemctl enable --now systemd-networkd
+
+    - name: "cache: os packages"
+      uses: actions/cache@v3
+      with:
+        path: mkosi.cache
+        key: fedora-cache-v2
+
+    - name: "acquire: ubdsrv"
+      uses: actions/checkout@v3
+
+    - name: "build: fedora image"
+      working-directory: ci
+      run: |
+        sudo $(which mkosi) build
+
+    - name: "start: boot fedora in qemu"
+      working-directory: ci
+      run: |
+        RUNNER_TRACKING_ID="" && sudo $(which mkosi) qemu -serial none -monitor none -display none | tee ${{ github.workspace }}/qemu.log &
+
+    - name: "connect: check ssh connection"
+      shell: bash
+      timeout-minutes: 10
+      working-directory: ci
+      run: |
+        until mkosi ssh uname -a; do
+          echo "Retrying..."
+          sleep 0.25
+        done
+
+    - name: "test: run ublk"
+      working-directory: ci
+      run: |
+        mkosi ssh ublk list
+
+    - name: "test: run tests"
+      working-directory: ci
+      run: |
+        mkosi ssh UBLK=ublk /usr/share/tests/run_test.sh all 10 tests/tmp/
+
+    - name: "cleanup"
+      if: always()
+      continue-on-error: true
+      run: |
+        cat ${{ github.workspace }}/qemu.log
+        sudo pkill -f qemu

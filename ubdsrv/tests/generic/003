@@ -1,0 +1,62 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT or GPL-2.0-only
+
+. common/fio_common
+. common/loop_common
+. common/qcow2_common
+. common/nbd_common
+
+ublk_run_mount_test()
+{
+	local dev=`__create_ublk_dev`
+	local mnt=$1
+
+	ROOT_FSTYPE=`findmnt -l -o FSTYPE -n /`
+	echo -n -e "\tmount/umount $dev(ublk $T_TYPE_PARAMS) with fstype($ROOT_FSTYPE)..."
+
+
+	wipefs -a $dev > /dev/null 2>&1
+	eval mkfs.${ROOT_FSTYPE} $dev > /dev/null 2>&1
+
+	mount $dev $mnt > /dev/null 2>&1
+
+	UBLK_FSTYPE=`findmnt -l -o FSTYPE -n $mnt`
+	if [ "$UBLK_FSTYPE" = "$ROOT_FSTYPE" ]; then
+			echo "ok"
+	else
+			echo "failed"
+	fi
+	umount $mnt > /dev/null 2>&1
+
+	__remove_ublk_dev $dev
+}
+
+ublk_run_mount_type()
+{
+	local type=$1
+	local mnt=$2
+	local queues=1
+	local dev=/dev/ublkb0
+
+	[ ${type} == "loop" ] && queues=2
+
+	file=`_create_image $type "null" 1G`
+
+	for NEED_GET_DATA in `seq 0 1`; do
+		if [ "$type" == "nbd" ]; then
+			export T_TYPE_PARAMS="-t $type -q $queues -g $NEED_GET_DATA -d 127 --host $NBDSRV"
+		else
+			export T_TYPE_PARAMS="-t $type -q $queues -g $NEED_GET_DATA -f $file"
+		fi
+		ublk_run_mount_test $mnt
+	done
+	_remove_image ${type} $file
+}
+
+MNT=`mktemp -d`
+
+for TYPE in "loop" "qcow2" "nbd"; do
+	ublk_run_mount_type $TYPE $MNT
+done
+
+rm -fr $MNT

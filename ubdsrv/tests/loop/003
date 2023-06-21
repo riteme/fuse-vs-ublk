@@ -1,0 +1,16 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT or GPL-2.0-only
+
+. common/fio_common
+. common/loop_common
+
+file=`_create_loop_image "data" $LO_IMG_SZ`
+
+export T_TYPE="losetup"
+
+# '-f $file' has to be the last one
+export T_TYPE_PARAMS="--direct-io=on -f $file"
+
+__run_loop_dev_perf 1
+
+_remove_loop_image $file

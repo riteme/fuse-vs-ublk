@@ -1,0 +1,338 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT or GPL-2.0-only
+
+declare -A TEST_RUN
+
+declare -A FIO_TERSE_FIELDS
+FIO_TERSE_FIELDS=(
+	# Read status
+	["read io"]=6
+	["read bandwidth"]=7
+	["read iops"]=8
+	["read runtime"]=9
+	["read slat min"]=10
+	["read slat max"]=11
+	["read slat mean"]=12
+	["read slat stdev"]=13
+	["read clat min"]=14
+	["read clat max"]=15
+	["read clat mean"]=16
+	["read clat stdev"]=17
+	# read clat percentiles are 18-37
+	["read lat min"]=38
+	["read lat max"]=39
+	["read lat mean"]=40
+	["read lat stdev"]=41
+	["read bandwidth min"]=42
+	["read bandwidth max"]=43
+	["read bandwidth %"]=44
+	["read bandwidth mean"]=45
+	["read bandwidth stdev"]=46
+
+	# Write status
+	["write io"]=47
+	["write bandwidth"]=48
+	["write iops"]=49
+	["write runtime"]=50
+	["write slat min"]=51
+	["write slat max"]=52
+	["write slat mean"]=53
+	["write slat stdev"]=54
+	["write clat min"]=55
+	["write clat max"]=56
+	["write clat mean"]=57
+	["write clat stdev"]=58
+	# write clat percentiles are 59-78
+	["write lat min"]=79
+	["write lat max"]=80
+	["write lat mean"]=81
+	["write lat stdev"]=82
+	["write bandwidth min"]=83
+	["write bandwidth max"]=84
+	["write bandwidth %"]=85
+	["write bandwidth mean"]=86
+	["write bandwidth stdev"]=87
+
+	# Trim status
+	["trim io"]=88
+	["trim bandwidth"]=89
+	["trim iops"]=90
+	["trim runtime"]=91
+	["trim slat min"]=92
+	["trim slat max"]=93
+	["trim slat mean"]=94
+	["trim slat stdev"]=95
+	["trim clat min"]=96
+	["trim clat max"]=97
+	["trim clat mean"]=98
+	["trim clat stdev"]=99
+	# trim clat percentiles are 100-119
+	["trim lat min"]=120
+	["trim lat max"]=121
+	["trim lat mean"]=122
+	["trim lat stdev"]=123
+	["trim bandwidth min"]=124
+	["trim bandwidth max"]=125
+	["trim bandwidth %"]=126
+	["trim bandwidth mean"]=127
+	["trim bandwidth stdev"]=128
+
+	# CPU usage
+	["user cpu"]=129
+	["system cpu"]=130
+	["context switches"]=131
+	["major page faults"]=132
+	["minor page faults"]=133
+
+	# IO depth distribution
+	["io depth <=1"]=134
+	["io depth 2"]=135
+	["io depth 4"]=136
+	["io depth 8"]=137
+	["io depth 16"]=138
+	["io depth 32"]=139
+	["io depth >=64"]=140
+
+	# IO latency distribution
+	["io latency <=2 us"]=141
+	["io latency 4 us"]=142
+	["io latency 10 us"]=143
+	["io latency 20 us"]=144
+	["io latency 50 us"]=145
+	["io latency 100 us"]=146
+	["io latency 250 us"]=147
+	["io latency 500 us"]=148
+	["io latency 750 us"]=149
+	["io latency 1000 us"]=150
+	["io latency <=2 ms"]=151
+	["io latency 4 ms"]=152
+	["io latency 10 ms"]=153
+	["io latency 20 ms"]=154
+	["io latency 50 ms"]=155
+	["io latency 100 ms"]=156
+	["io latency 250 ms"]=157
+	["io latency 500 ms"]=158
+	["io latency 750 ms"]=159
+	["io latency 1000 ms"]=160
+	["io latency 2000 ms"]=161
+	["io latency >=2000 ms"]=162
+
+	# Disk utilization (11 fields per disk)
+)
+
+FIO_OUTPUT="$TEST_DIR/.fio_perf"
+
+_fio_perf_report() {
+	# If there is more than one group, we don't know what to report.
+	if [[ $(wc -l < "$FIO_OUTPUT") -gt 1 ]]; then
+		echo "_fio_perf: too many terse lines" >&2
+		return
+	fi
+
+	local name field value
+	for name in "${FIO_PERF_FIELDS[@]}"; do
+		field="${FIO_TERSE_FIELDS["$name"]}"
+		if [[ -z $field ]]; then
+			echo "_fio_perf: unknown fio terse field '$name'" >&2
+			continue
+		fi
+		value="$(cut -d ';' -f "$field" "$FIO_OUTPUT")"
+		TEST_RUN["$FIO_PERF_PREFIX$name"]="$value"
+	done
+}
+
+__run_fio_libaio() {
+	DEVS=$1
+	BS=$2
+	RW=$3
+	JOBS=$4
+	RTIME=$5
+
+	QD=128
+	BATCH=16
+	FIO=fio
+
+	$FIO --output=$FIO_OUTPUT --output-format=terse --terse-version=4 --group_reporting=1 \
+		--bs=$BS --ioengine=libaio \
+        --iodepth=$QD \
+        --iodepth_batch_submit=$BATCH \
+        --iodepth_batch_complete_min=$BATCH \
+        --filename=$DEVS --gtod_reduce=1 \
+        --direct=1 --runtime=$RTIME --numjobs=$JOBS --rw=$RW \
+        --name=test > /dev/null 2>&1
+}
+
+__ublk_loop_backing_file() {
+	eval $UBLK list > ${UBLK_TMP}
+	file=`cat ${UBLK_TMP} | grep "loop" | awk '{print $2}' | awk -F "," '{print $1}' | awk -F ":" '{print $2}'`
+	echo $file | xargs
+}
+
+__ublk_dev_id() {
+	local dev=$1
+	dev_id=`echo "$dev" | awk '{print substr($1, 11)}'`
+	echo "$dev_id"
+}
+
+__ublk_get_pid() {
+	local dev=$1
+	local dev_id=`__ublk_dev_id $dev`
+
+	eval $UBLK list -n $dev_id > ${UBLK_TMP}
+	pid=`cat ${UBLK_TMP} | grep "pid" | awk '{print $7}'`
+	echo $pid
+}
+
+__ublk_get_queue_tid() {
+	local dev=$1
+	local qid=$2
+	local dev_id=`__ublk_dev_id $dev`
+
+	eval $UBLK list -n ${dev_id} > ${UBLK_TMP}
+	q_tid=`cat ${UBLK_TMP} | grep "queue ${qid}" | awk '{print $4}'`
+	echo $q_tid
+}
+
+__ublk_get_dev_state() {
+	local dev=$1
+	local dev_id=`__ublk_dev_id $dev`
+
+	eval $UBLK list -n ${dev_id} > ${UBLK_TMP}
+	state=`cat ${UBLK_TMP} | grep "state" | awk '{print $11}'`
+	echo $state
+}
+
+__run_fio_perf() {
+	__run_fio_libaio $@
+	_fio_perf_report
+}
+
+__remove_ublk_dev_return() {
+	local dev="$1"
+	if [ "$dev" == "*" ]; then
+		eval $UBLK del -a
+	else
+		dev_id=`__ublk_dev_id $dev`
+		eval $UBLK del -n "$dev_id"
+	fi
+	RES=$?
+	udevadm settle
+	echo $RES
+}
+
+__remove_ublk_dev() {
+	__remove_ublk_dev_return $@ > /dev/null 2>&1
+}
+
+__find_free_ublk_id()
+{
+	for id in `seq 0 64`; do
+		[ -c /dev/ublkc${id} ] && continue
+		echo $id
+		break
+	done
+	[ $id == "64" ] && echo "-"
+}
+
+__create_ublk_dev()
+{
+	id=`__find_free_ublk_id`
+	[ ${id} == "-" ] && echo "no free ublk device nodes" && exit -1
+	eval $UBLK add ${T_TYPE_PARAMS} -n $id > /dev/null 2>&1
+	udevadm settle
+	echo "/dev/ublkb${id}"
+}
+
+__recover_ublk_dev()
+{
+	local dev=$1
+	local dev_id=`__ublk_dev_id $dev`
+
+	eval $UBLK recover -n $dev_id
+	RES=$?
+	echo $RES
+}
+
+__get_cpu_utils()
+{
+	local user_cpu=`echo ${TEST_RUN["user cpu"]} | awk -F "." '{print $1}'`
+	local sys_cpu=`echo ${TEST_RUN["system cpu"]} | awk -F "." '{print $1}'`
+	echo "cpu_util(${user_cpu}% ${sys_cpu}%)"
+}
+
+__run_dev_perf_no_create()
+{
+	local TYPE=$1
+	local JOBS=$2
+	local DEV=$3
+	local RT=$TRUNTIME
+	local BS=4k
+	local FIO_PERF_FIELDS=("read iops" "write iops" "user cpu" "system cpu")
+
+	RW="randwrite"
+	__run_fio_perf $DEV $BS $RW $JOBS 20
+	cpu_util=`__get_cpu_utils`
+	echo -e "\t$RW($BS): jobs $JOBS, iops ${TEST_RUN["write iops"]}, $cpu_util"
+
+	RW="randread"
+	__run_fio_perf $DEV $BS $RW $JOBS $RT
+	cpu_util=`__get_cpu_utils`
+	echo -e "\t$RW($BS): jobs $JOBS, iops ${TEST_RUN["read iops"]}, $cpu_util"
+
+	RW="randrw"
+	__run_fio_perf $DEV $BS $RW $JOBS $RT
+	cpu_util=`__get_cpu_utils`
+	echo -e "\t$RW($BS): jobs $JOBS, iops read ${TEST_RUN["read iops"]} write ${TEST_RUN["write iops"]}, $cpu_util"
+
+	RW="rw"
+	BS=64k
+	__run_fio_perf $DEV $BS $RW $JOBS $RT
+	cpu_util=`__get_cpu_utils`
+	echo -e "\t$RW($BS): jobs $JOBS, iops read ${TEST_RUN["read iops"]} write ${TEST_RUN["write iops"]}, $cpu_util"
+
+	RW="rw"
+	BS=512k
+	__run_fio_perf $DEV $BS $RW $JOBS $RT
+	cpu_util=`__get_cpu_utils`
+	echo -e "\t$RW($BS): jobs $JOBS, iops read ${TEST_RUN["read iops"]} write ${TEST_RUN["write iops"]}, $cpu_util"
+
+	echo ""
+}
+
+__run_dev_perf()
+{
+	JOBS=$1
+
+	DEV=`__create_ublk_dev`
+
+	echo -e "\tublk add ${T_TYPE_PARAMS}, fio: ($DEV libaio dio io jobs($JOBS))..."
+	__run_dev_perf_no_create "ublk" $JOBS $DEV
+
+	__remove_ublk_dev $DEV
+}
+
+_create_null_image()
+{
+	echo ""
+}
+
+_create_image()
+{
+	local type=$1
+
+	shift 1
+
+	eval _create_${type}_image $@
+}
+
+_remove_null_image()
+{
+	echo "nothing" > /dev/null
+}
+
+_remove_image()
+{
+	local type=$1
+	shift 1
+	eval _remove_${type}_image $@
+}

@@ -1,4 +1,4 @@
-.PHONY: disk
+.PHONY: disk ublk
 
 disk:
 	mkdir -p mount
@@ -9,3 +9,7 @@ disk:
 
 fuse: fuse.c fuse_helpers.h
 	$(CC) -Wall $< `pkg-config fuse3 --cflags --libs` -o $@
+
+ublk:
+	cd ubdsrv; autoreconf -i; ./configure; make
+	ln -sf ubdsrv/ublk .

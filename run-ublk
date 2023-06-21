@@ -1,0 +1,14 @@
+#!/bin/bash
+
+clean() {
+    set -x
+
+    sudo ./ublk del -a
+}
+
+trap clean EXIT
+set -mex
+
+./ublk add -t loop -n 0 -q 1 -d 256 -f test/disk
+
+sleep infinity
