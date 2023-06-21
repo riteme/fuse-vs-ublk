@@ -1,0 +1,17 @@
+#!/bin/bash
+
+clean() {
+    set -x
+
+    sudo losetup -D
+    pkill fuse
+}
+
+trap clean EXIT
+set -mex
+
+make fuse
+./fuse -f -o max_threads=12,allow_other,allow_root,auto_unmount,no_writeback,source=test,no_flock,no_xattr,cache=never mount &
+sleep 1
+sudo losetup -f --show -b 4096 --direct-io=on mount/disk
+fg
