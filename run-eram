@@ -1,0 +1,19 @@
+#!/bin/bash
+
+clean() {
+    set -x
+
+    sudo losetup -D
+    pkill eloop
+}
+
+trap clean EXIT
+set -mex
+
+touch loop
+../eloop loop test/disk 0 ../enclave.signed.so &
+sleep 1
+lo_dev=$(sudo losetup -f --show -b 4096 --direct-io=on loop)
+sudo losetup -c $lo_dev
+echo $lo_dev
+fg
